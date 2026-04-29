@@ -38,6 +38,25 @@ class Alert:
     threshold: Optional[str] = None  # 阈值描述
 
 
+@dataclass
+class EmergencyContact:
+    """紧急联系人信息"""
+    name: str              # 联系人姓名
+    phone: str             # 联系人电话
+    relationship: str      # 关系（如：家人、医生）
+    email: Optional[str] = None  # 联系人邮箱（可选）
+
+
+@dataclass
+class Notification:
+    """通知记录"""
+    timestamp: datetime    # 发送时间
+    contact: EmergencyContact  # 联系人
+    alert_level: str       # 告警级别
+    message: str           # 发送的消息
+    success: bool          # 是否发送成功
+
+
 class HealthMonitor:
     """健康监测器，负责基线计算和异常检测"""
 
@@ -55,7 +74,30 @@ class HealthMonitor:
         """
         self.history: List[HealthRecord] = history or []
         self.baseline: Optional[Baseline] = None
+        self.emergency_contacts: List[EmergencyContact] = []  # 紧急联系人列表
+        self.notifications: List[Notification] = []  # 通知历史
+        self.last_critical_alert: Optional[datetime] = None  # 上次critical告警时间
         self.update_baseline()
+
+    def add_emergency_contact(self, contact: EmergencyContact) -> None:
+        """添加紧急联系人
+        Args:
+            contact: 紧急联系人信息
+        """
+        self.emergency_contacts.append(contact)
+
+    def remove_emergency_contact(self, phone: str) -> bool:
+        """移除紧急联系人
+        Args:
+            phone: 联系人电话
+        Returns:
+            是否成功移除
+        """
+        for i, contact in enumerate(self.emergency_contacts):
+            if contact.phone == phone:
+                self.emergency_contacts.pop(i)
+                return True
+        return False
 
     def add_record(self, record: HealthRecord) -> None:
         """添加新记录并更新基线
@@ -93,6 +135,53 @@ class HealthMonitor:
             glucose_min=max(60, mean(glucose_values) - 1.5 * stdev(glucose_values)),
             glucose_max=min(250, mean(glucose_values) + 1.5 * stdev(glucose_values)),
         )
+
+    def send_emergency_notification(self, alert_level: str, alerts: List[Alert]) -> List[Notification]:
+        """发送紧急通知给所有联系人
+        Args:
+            alert_level: 告警级别
+            alerts: 告警列表
+        Returns:
+            通知记录列表
+        """
+        if alert_level != "critical":
+            return []
+
+        notifications = []
+        timestamp = datetime.now()
+
+        # 构建通知消息
+        alert_messages = [f"{alert.metric}: {alert.value} ({alert.message})" for alert in alerts]
+        message = f"紧急健康告警！\n级别：{alert_level}\n异常详情：\n" + "\n".join(alert_messages) + f"\n时间：{timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
+
+        for contact in self.emergency_contacts:
+            # 模拟发送通知（实际应用中应调用短信/邮件API）
+            success = self._simulate_send_notification(contact, message)
+            notification = Notification(
+                timestamp=timestamp,
+                contact=contact,
+                alert_level=alert_level,
+                message=message,
+                success=success
+            )
+            notifications.append(notification)
+            self.notifications.append(notification)
+
+        return notifications
+
+    def _simulate_send_notification(self, contact: EmergencyContact, message: str) -> bool:
+        """模拟发送通知（实际应用中替换为真实API调用）
+        Args:
+            contact: 联系人
+            message: 消息内容
+        Returns:
+            是否发送成功
+        """
+        # 模拟发送逻辑：打印到控制台
+        print(f"[模拟通知] 发送给 {contact.name} ({contact.phone})")
+        print(f"消息内容：{message}")
+        print("-" * 50)
+        return True  # 假设总是成功
 
     def assess_record(self, record: HealthRecord) -> List[Alert]:
         """评估单条记录的异常情况
@@ -195,15 +284,27 @@ class HealthMonitor:
                 return level
         return "normal"
 
-    def assess_latest(self) -> tuple[List[Alert], str]:
-        """评估最新记录
+    def assess_latest(self) -> tuple[List[Alert], str, List[Notification]]:
+        """评估最新记录并发送紧急通知
         Returns:
-            (告警列表, 整体告警级别)
+            (告警列表, 整体告警级别, 通知记录列表)
         """
         if not self.history:
-            return [], "normal"
+            return [], "normal", []
+
         alerts = self.assess_record(self.history[-1])
-        return alerts, self.get_overall_alert_level(alerts)
+        overall_level = self.get_overall_alert_level(alerts)
+
+        # 检查是否需要发送紧急通知
+        notifications = []
+        if overall_level == "critical":
+            # 避免频繁发送：如果上次critical在5分钟内，跳过
+            now = datetime.now()
+            if self.last_critical_alert is None or (now - self.last_critical_alert).total_seconds() > 300:
+                notifications = self.send_emergency_notification(overall_level, alerts)
+                self.last_critical_alert = now
+
+        return alerts, overall_level, notifications
 
 
 def create_sample_history() -> List[HealthRecord]:
@@ -222,11 +323,12 @@ def create_sample_history() -> List[HealthRecord]:
     return sample
 
 
-def print_alerts(alerts: List[Alert], overall_level: str) -> None:
-    """打印告警信息
+def print_alerts(alerts: List[Alert], overall_level: str, notifications: List[Notification]) -> None:
+    """打印告警信息和通知记录
     Args:
         alerts: 告警列表
         overall_level: 整体告警级别
+        notifications: 通知记录列表
     """
     if overall_level == "normal":
         print("当前监测数据正常。")
@@ -236,13 +338,32 @@ def print_alerts(alerts: List[Alert], overall_level: str) -> None:
     for alert in alerts:
         print(f"- [{alert.level}] {alert.metric}: {alert.value} -> {alert.message}")
 
+    if notifications:
+        print("\n已发送紧急通知：")
+        for notification in notifications:
+            status = "成功" if notification.success else "失败"
+            print(f"- 联系人：{notification.contact.name} ({notification.contact.phone}) - {status}")
+
 
 def main() -> None:
     """主函数：运行示例"""
     history = create_sample_history()
     monitor = HealthMonitor(history=history)
 
-    # 模拟最新一条记录
+    # 添加紧急联系人
+    monitor.add_emergency_contact(EmergencyContact(
+        name="张医生",
+        phone="13800138000",
+        email="doctor@example.com",
+        relationship="主治医生"
+    ))
+    monitor.add_emergency_contact(EmergencyContact(
+        name="李家人",
+        phone="13900139000",
+        relationship="家人"
+    ))
+
+    # 模拟最新一条记录（触发critical告警）
     latest_record = HealthRecord(
         timestamp=datetime.now(),
         heart_rate=120,
@@ -252,8 +373,11 @@ def main() -> None:
         device_connected=True,
     )
     monitor.add_record(latest_record)
-    alerts, overall_level = monitor.assess_latest()
-    print_alerts(alerts, overall_level)
+    alerts, overall_level, notifications = monitor.assess_latest()
+    print_alerts(alerts, overall_level, notifications)
+
+    print(f"\n紧急联系人数量：{len(monitor.emergency_contacts)}")
+    print(f"通知历史数量：{len(monitor.notifications)}")
 
 
 if __name__ == "__main__":
