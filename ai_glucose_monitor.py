@@ -8,34 +8,39 @@ from typing import Iterable, List, Optional
 
 @dataclass
 class HealthRecord:
-    timestamp: datetime
-    heart_rate: float
-    spo2: float
-    glucose: float
-    activity_level: float
-    device_connected: bool = True
+    """健康记录数据结构，包含单次监测的所有指标"""
+    timestamp: datetime  # 记录时间戳
+    heart_rate: float    # 心率（bpm）
+    spo2: float          # 血氧饱和度（%）
+    glucose: float       # 血糖水平（mg/dL）
+    activity_level: float  # 活动水平（0-2，0=静息，2=高强度）
+    device_connected: bool = True  # 设备是否连接/佩戴
 
 
 @dataclass
 class Baseline:
-    heart_rate_min: float
-    heart_rate_max: float
-    spo2_min: float
-    spo2_max: float
-    glucose_min: float
-    glucose_max: float
+    """用户个性化基线数据，基于历史数据计算"""
+    heart_rate_min: float  # 心率下限
+    heart_rate_max: float  # 心率上限
+    spo2_min: float        # 血氧下限
+    spo2_max: float        # 血氧上限
+    glucose_min: float     # 血糖下限
+    glucose_max: float     # 血糖上限
 
 
 @dataclass
 class Alert:
-    level: str
-    message: str
-    metric: str
-    value: float
-    threshold: Optional[str] = None
+    """异常告警信息"""
+    level: str             # 告警级别：normal/info/warning/critical
+    message: str           # 告警消息
+    metric: str            # 异常指标名称
+    value: float           # 异常值
+    threshold: Optional[str] = None  # 阈值描述
 
 
 class HealthMonitor:
+    """健康监测器，负责基线计算和异常检测"""
+
     ALERT_PRIORITY = {
         "normal": 0,
         "info": 1,
@@ -44,16 +49,26 @@ class HealthMonitor:
     }
 
     def __init__(self, history: Optional[List[HealthRecord]] = None):
+        """初始化监测器
+        Args:
+            history: 历史健康记录列表
+        """
         self.history: List[HealthRecord] = history or []
         self.baseline: Optional[Baseline] = None
         self.update_baseline()
 
     def add_record(self, record: HealthRecord) -> None:
+        """添加新记录并更新基线
+        Args:
+            record: 新健康记录
+        """
         self.history.append(record)
         self.update_baseline()
 
     def update_baseline(self) -> None:
+        """基于历史数据更新个性化基线"""
         if len(self.history) < 5:
+            # 数据不足时使用默认基线
             self.baseline = Baseline(
                 heart_rate_min=50,
                 heart_rate_max=110,
@@ -64,10 +79,12 @@ class HealthMonitor:
             )
             return
 
+        # 计算各指标的历史均值和标准差
         hr_values = [r.heart_rate for r in self.history]
         spo2_values = [r.spo2 for r in self.history]
         glucose_values = [r.glucose for r in self.history]
 
+        # 使用均值±1.5倍标准差作为基线范围
         self.baseline = Baseline(
             heart_rate_min=max(40, mean(hr_values) - 1.5 * stdev(hr_values)),
             heart_rate_max=min(140, mean(hr_values) + 1.5 * stdev(hr_values)),
@@ -78,11 +95,18 @@ class HealthMonitor:
         )
 
     def assess_record(self, record: HealthRecord) -> List[Alert]:
+        """评估单条记录的异常情况
+        Args:
+            record: 要评估的健康记录
+        Returns:
+            异常告警列表
+        """
         alerts: List[Alert] = []
         baseline = self.baseline
         if baseline is None:
             return alerts
 
+        # 检查设备连接状态
         if not record.device_connected:
             alerts.append(Alert(
                 level="warning",
@@ -92,10 +116,12 @@ class HealthMonitor:
             ))
             return alerts
 
+        # 判断是否处于静息状态
         is_resting = record.activity_level <= 1.0
 
+        # 血糖异常检测
         if record.glucose < baseline.glucose_min:
-            level = "critical" if record.glucose < 55 else "warning"
+            level = "critical" if record.glucose < 55 else "warning"  # 严重低血糖
             alerts.append(Alert(
                 level=level,
                 message="血糖低于正常基线，建议立即复测并补充碳水化合物。",
@@ -104,7 +130,7 @@ class HealthMonitor:
                 threshold=f"<{baseline.glucose_min:.1f}",
             ))
         elif record.glucose > baseline.glucose_max:
-            level = "critical" if record.glucose > 240 else "warning"
+            level = "critical" if record.glucose > 240 else "warning"  # 严重高血糖
             alerts.append(Alert(
                 level=level,
                 message="血糖高于正常基线，可能存在高血糖风险。",
@@ -113,6 +139,7 @@ class HealthMonitor:
                 threshold=f">{baseline.glucose_max:.1f}",
             ))
 
+        # 心率异常检测
         if record.heart_rate < baseline.heart_rate_min:
             alerts.append(Alert(
                 level="warning",
@@ -131,8 +158,9 @@ class HealthMonitor:
                 threshold=f">{baseline.heart_rate_max:.1f}",
             ))
 
+        # 血氧异常检测
         if record.spo2 < baseline.spo2_min:
-            level = "critical" if record.spo2 < 90 else "warning"
+            level = "critical" if record.spo2 < 90 else "warning"  # 严重低氧
             alerts.append(Alert(
                 level=level,
                 message="血氧低于正常范围，请保持静息并监测。",
@@ -141,6 +169,7 @@ class HealthMonitor:
                 threshold=f"<{baseline.spo2_min:.1f}",
             ))
 
+        # 复合异常检测：多项指标同时异常
         if record.glucose > baseline.glucose_max and record.heart_rate > baseline.heart_rate_max and record.spo2 < baseline.spo2_min:
             alerts.append(Alert(
                 level="critical",
@@ -152,6 +181,12 @@ class HealthMonitor:
         return alerts
 
     def get_overall_alert_level(self, alerts: List[Alert]) -> str:
+        """获取整体告警级别
+        Args:
+            alerts: 告警列表
+        Returns:
+            最高告警级别
+        """
         if not alerts:
             return "normal"
         highest = max((self.ALERT_PRIORITY.get(alert.level, 0) for alert in alerts), default=0)
@@ -161,6 +196,10 @@ class HealthMonitor:
         return "normal"
 
     def assess_latest(self) -> tuple[List[Alert], str]:
+        """评估最新记录
+        Returns:
+            (告警列表, 整体告警级别)
+        """
         if not self.history:
             return [], "normal"
         alerts = self.assess_record(self.history[-1])
@@ -168,6 +207,7 @@ class HealthMonitor:
 
 
 def create_sample_history() -> List[HealthRecord]:
+    """创建示例历史数据用于测试"""
     now = datetime.now()
     sample: List[HealthRecord] = []
     for hour in range(24):
@@ -183,6 +223,11 @@ def create_sample_history() -> List[HealthRecord]:
 
 
 def print_alerts(alerts: List[Alert], overall_level: str) -> None:
+    """打印告警信息
+    Args:
+        alerts: 告警列表
+        overall_level: 整体告警级别
+    """
     if overall_level == "normal":
         print("当前监测数据正常。")
         return
@@ -193,6 +238,7 @@ def print_alerts(alerts: List[Alert], overall_level: str) -> None:
 
 
 def main() -> None:
+    """主函数：运行示例"""
     history = create_sample_history()
     monitor = HealthMonitor(history=history)
 
@@ -212,3 +258,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
