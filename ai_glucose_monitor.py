@@ -36,6 +36,13 @@ class Alert:
 
 
 class HealthMonitor:
+    ALERT_PRIORITY = {
+        "normal": 0,
+        "info": 1,
+        "warning": 2,
+        "critical": 3,
+    }
+
     def __init__(self, history: Optional[List[HealthRecord]] = None):
         self.history: List[HealthRecord] = history or []
         self.baseline: Optional[Baseline] = None
@@ -85,17 +92,21 @@ class HealthMonitor:
             ))
             return alerts
 
+        is_resting = record.activity_level <= 1.0
+
         if record.glucose < baseline.glucose_min:
+            level = "critical" if record.glucose < 55 else "warning"
             alerts.append(Alert(
-                level="critical",
+                level=level,
                 message="血糖低于正常基线，建议立即复测并补充碳水化合物。",
                 metric="glucose",
                 value=record.glucose,
                 threshold=f"<{baseline.glucose_min:.1f}",
             ))
         elif record.glucose > baseline.glucose_max:
+            level = "critical" if record.glucose > 240 else "warning"
             alerts.append(Alert(
-                level="critical",
+                level=level,
                 message="血糖高于正常基线，可能存在高血糖风险。",
                 metric="glucose",
                 value=record.glucose,
@@ -111,29 +122,49 @@ class HealthMonitor:
                 threshold=f"<{baseline.heart_rate_min:.1f}",
             ))
         elif record.heart_rate > baseline.heart_rate_max:
+            level = "critical" if is_resting and record.heart_rate > baseline.heart_rate_max + 10 else "warning"
             alerts.append(Alert(
-                level="warning",
-                message="心率偏高，建议观察休息状态。",
+                level=level,
+                message="心率偏高，建议观察休息状态。" if level == "warning" else "静息状态下心率显著偏高，需尽快检查。",
                 metric="heart_rate",
                 value=record.heart_rate,
                 threshold=f">{baseline.heart_rate_max:.1f}",
             ))
 
         if record.spo2 < baseline.spo2_min:
+            level = "critical" if record.spo2 < 90 else "warning"
             alerts.append(Alert(
-                level="warning",
+                level=level,
                 message="血氧低于正常范围，请保持静息并监测。",
                 metric="spo2",
                 value=record.spo2,
                 threshold=f"<{baseline.spo2_min:.1f}",
             ))
 
+        if record.glucose > baseline.glucose_max and record.heart_rate > baseline.heart_rate_max and record.spo2 < baseline.spo2_min:
+            alerts.append(Alert(
+                level="critical",
+                message="多项指标同时异常，风险较高，请立即关注。",
+                metric="composite",
+                value=0.0,
+            ))
+
         return alerts
 
-    def assess_latest(self) -> List[Alert]:
+    def get_overall_alert_level(self, alerts: List[Alert]) -> str:
+        if not alerts:
+            return "normal"
+        highest = max((self.ALERT_PRIORITY.get(alert.level, 0) for alert in alerts), default=0)
+        for level, score in reversed(self.ALERT_PRIORITY.items()):
+            if score == highest:
+                return level
+        return "normal"
+
+    def assess_latest(self) -> tuple[List[Alert], str]:
         if not self.history:
-            return []
-        return self.assess_record(self.history[-1])
+            return [], "normal"
+        alerts = self.assess_record(self.history[-1])
+        return alerts, self.get_overall_alert_level(alerts)
 
 
 def create_sample_history() -> List[HealthRecord]:
@@ -151,10 +182,11 @@ def create_sample_history() -> List[HealthRecord]:
     return sample
 
 
-def print_alerts(alerts: List[Alert]) -> None:
-    if not alerts:
+def print_alerts(alerts: List[Alert], overall_level: str) -> None:
+    if overall_level == "normal":
         print("当前监测数据正常。")
         return
+    print(f"整体告警级别：{overall_level}")
     print("发现异常：")
     for alert in alerts:
         print(f"- [{alert.level}] {alert.metric}: {alert.value} -> {alert.message}")
@@ -174,8 +206,8 @@ def main() -> None:
         device_connected=True,
     )
     monitor.add_record(latest_record)
-    alerts = monitor.assess_latest()
-    print_alerts(alerts)
+    alerts, overall_level = monitor.assess_latest()
+    print_alerts(alerts, overall_level)
 
 
 if __name__ == "__main__":
